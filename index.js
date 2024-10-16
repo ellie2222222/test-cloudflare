@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const { sendToQueue } = require("./utils");
 const app = express();
 
 // Middleware
@@ -21,8 +22,17 @@ app.use((req, res, next) => {
   next();
 });
 
-app.post("/api/webhooks/cloudflare", (req, res) => {
-  res.status(200).json({ message: "OK" })
+app.post("/api/webhooks/cloudflare", async (req, res) => {
+  const data = req.body;
+  const queueName = `bunny_livestream_${process.env.RABBITMQ_PREFIX}`;
+
+  try {
+    await sendToQueue(queueName, data);
+
+    res.status(200).json({ message: "OK" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to process webhook" });
+  }
 })
 
 // Start server
