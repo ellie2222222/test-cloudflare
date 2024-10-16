@@ -2,7 +2,6 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const app = express();
-const server = require("http").createServer(app);
 
 // Middleware
 app.use(
@@ -29,7 +28,7 @@ app.post("/api/webhooks/cloudflare", (req, res) => {
 // Start server
 const port = process.env.DEVELOPMENT_PORT || 3000;
 
-server.listen(port, (err) => {
+app.listen(port, (err) => {
   if (err) {
     console.log("Failed to start server:", err);
     process.exit(1);
