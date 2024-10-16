@@ -66,7 +66,7 @@ const startProcessingQueueBunny = async (socketNamespace, userSocketMap) => {
     }
 };
 
-const rabbitMQUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASS}@${process.env.RABBITMQ_URL}:${process.env.RABBITMQ_PORT}`;
+const rabbitMQUrl = `amqp://livestream_1:DMCF5qyDg6wx2g3m8n@62.77.156.171`;
 
 // Helper function to send message to RabbitMQ
 async function sendToQueue(queueName, message) {
