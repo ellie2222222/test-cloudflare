@@ -22,7 +22,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use("/api/webhooks/cloudflare", (req, res) => {
+app.post("/api/webhooks/cloudflare", (req, res) => {
   res.status(200).json({ message: "OK" })
 })
 
