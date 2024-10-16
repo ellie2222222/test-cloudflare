@@ -1,3 +1,5 @@
+const amqp = require("amqplib");
+
 // Hàng đợi để xử lý chuyển đổi và upload
 const startProcessingQueueBunny = async (socketNamespace, userSocketMap) => {
     try {
