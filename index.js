@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 });
 
 app.use("/api/webhooks/cloudflare", () => {
-    
+    console.log("test")
 })
 
 // Start server
