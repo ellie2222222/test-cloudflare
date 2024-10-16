@@ -22,8 +22,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use("/api/webhooks/cloudflare", () => {
-    console.log("test")
+app.use("/api/webhooks/cloudflare", (req, res) => {
+  res.status(200).json({ message: "OK" })
 })
 
 // Start server
