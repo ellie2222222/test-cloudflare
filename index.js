@@ -36,7 +36,7 @@ app.post("/api/webhooks/cloudflare", async (req, res) => {
   }
 })
 
-// getMessage(`bunny_livestream_${process.env.RABBITMQ_PREFIX}`);
+getMessage(`bunny_livestream_${process.env.RABBITMQ_PREFIX}`);
 
 // Start server
 const port = process.env.DEVELOPMENT_PORT || 3000;
