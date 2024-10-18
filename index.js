@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
 const os = require("os");
 const { sendToQueue, getMessage, uploadToBunnyCDN } = require("./utils");
 const app = express();
@@ -16,7 +17,7 @@ app.use(
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
+app.use('/live-stream', express.static(path.join(__dirname, 'live-stream')));
 // Log API requests
 app.use((req, res, next) => {
   console.log(req.method + " " + req.path);
@@ -53,7 +54,7 @@ const getServerIpAddress = () => {
   return '127.0.0.1'; // Fallback to localhost
 };
 
-// getMessage(`bunny_livestream_${process.env.RABBITMQ_PREFIX}`);
+getMessage(`bunny_livestream_${process.env.RABBITMQ_PREFIX}`);
 
 // Start server
 const port = process.env.DEVELOPMENT_PORT || 3000;
