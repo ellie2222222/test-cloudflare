@@ -2,7 +2,6 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const os = require("os");
 const { sendToQueue, getMessage, uploadToBunnyCDN } = require("./utils");
 const app = express();
 
@@ -28,10 +27,6 @@ app.post("/api/webhooks/cloudflare", async (req, res) => {
   const data = req.body;
   const queueName = `bunny_livestream_${process.env.RABBITMQ_PREFIX}`;
 
-  console.log(data.data.event_type);
-  const ip = getServerIpAddress();
-  console.log(ip);
-
   try {
     await sendToQueue(queueName, data);
 
@@ -40,19 +35,6 @@ app.post("/api/webhooks/cloudflare", async (req, res) => {
     res.status(500).json({ error: "Failed to process webhook" });
   }
 })
-
-const getServerIpAddress = () => {
-  const networkInterfaces = os.networkInterfaces();
-  for (const interface in networkInterfaces) {
-      for (const addr of networkInterfaces[interface]) {
-          // Check for IPv4 address that is not internal (loopback)
-          if (addr.family === 'IPv4' && !addr.internal) {
-              return addr.address;
-          }
-      }
-  }
-  return '127.0.0.1'; // Fallback to localhost
-};
 
 getMessage(`bunny_livestream_${process.env.RABBITMQ_PREFIX}`);
 
