@@ -5,6 +5,7 @@ const https = require("https");
 const { spawn } = require('child_process');
 const moment = require("moment");
 const { default: axios } = require("axios");
+const chokidar = require("chokidar");
 
 // RabbitMQ connection URL
 const rabbitMQUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASS}@${process.env.RABBITMQ_URL}` || `amqp://livestream_1:DMCF5qyDg6wx2g3m8n@62.77.156.171`;
@@ -161,7 +162,7 @@ const startFFmpeg = (streamUrl, output) => {
             '-c:v', 'copy',
             '-c:a', 'copy',
             '-f', 'hls',
-            '-hls_time', '2',
+            '-hls_time', '3',
             '-hls_list_size', '3',
             '-hls_flags', 'split_by_time',
             '-hls_segment_filename', segmentPath,
@@ -182,7 +183,6 @@ const startFFmpeg = (streamUrl, output) => {
 
         ffmpeg.on('exit', async (code) => {
             try {
-                // Upload to Bunny Storage
                 console.log("Exiting FFmpeg...")
                 await stopFFmpeg(output, true);
 
@@ -219,10 +219,14 @@ const stopFFmpeg = async (identifier, hasEndTag) => {
         const m3u8FileName = `${identifier}.m3u8`;
         if (!hasEndTag) {
             const m3u8FilePath = path.join(outputDir, m3u8FileName);
-            fs.appendFileSync(m3u8FilePath, '\n#EXT-X-ENDLIST\n', 'utf8');
+            fs.appendFileSync(m3u8FilePath, '#EXT-X-ENDLIST', 'utf8');
         }
 
+        // Replace ts file with local url
+        const filePath = path.join(outputDir, m3u8FileName);
         replaceTsFileLocalPath(filePath, identifier);
+
+        // Upload to Bunny
         // await replaceTsFilePath(filePath, identifier);
         // await uploadToBunnyCDN(filePath, identifier, path.basename(filePath));
         // await uploadTsFiles(identifier);
@@ -355,19 +359,32 @@ const replaceTsFilePath = async (m3u8FilePath, identifier) => {
 };
 
 const replaceTsFileLocalPath = async (m3u8FilePath, identifier) => {
-    const url = `http://localhost:3000/live-stream/894367337b8247671f78fa82e424134f/${identifier}-segment-%03d.ts`;
-    let m3u8Content = fs.readFileSync(m3u8FilePath, "utf8");
+    try {
+        const url = `http://localhost:3000/live-stream/${identifier}`;
+        let m3u8Content;
 
-    const regex = new RegExp(
-        `${identifier}-segment-\\d+\\.ts`,
-        "g"
-    );
+        m3u8Content = fs.readFileSync(m3u8FilePath, "utf8");
 
-    m3u8Content = m3u8Content.replace(regex, (match) => {
-        return `${url}/${match}`;
-    });
+        const regex = new RegExp(`${identifier}-segment-\\d+\\.ts`, "g");
 
-    fs.writeFileSync(m3u8FilePath, m3u8Content);
+
+        m3u8Content = m3u8Content.replace(regex, (match) => {
+            const segmentFileName = match; // This is just the segment name (e.g., '582792b37303881f6c2ddc25359538d9-segment-006.ts')
+            const newUrl = `${url}/${segmentFileName}`;
+
+            // Check if the new URL already contains the full prefix
+            if (match.startsWith(`http://localhost:3000/live-stream/`)) {
+                return segmentFileName;
+            }
+
+            console.log(`Replacing ${segmentFileName} with ${newUrl}`);
+            return newUrl;
+        });
+
+        fs.writeFileSync(m3u8FilePath, m3u8Content);
+    } catch (error) {
+        console.error(`Error writing m3u8 file: ${error.message}`);
+    }
 };
 
 // Function to upload .ts segment files
@@ -383,34 +400,48 @@ const uploadTsFiles = async (identifier) => {
     }
 }
 
-// watcher
-//   .on('add', async (filePath) => {
-//     console.log(`File added: ${filePath}`);
+const watcher = chokidar.watch("./live-stream", {
+    persistent: true,
+    ignoreInitial: true,
+    awaitWriteFinish: {
+        stabilityThreshold: 1000,
+        pollInterval: 100,
+    },
+});
 
-//     if (filePath.endsWith('.m3u8')) {
-//       // Handle M3U8 file addition
-    //   await replaceTsFilePath(filePath, identifier);
-    //   await uploadToBunnyCDN(filePath, identifier, path.basename(filePath));
-    //   await uploadTsFiles(identifier); // Upload TS files if necessary
-    //   await purgeBunnyCDNCache(); // Clear BunnyCDN cache
-    // } else if (filePath.endsWith('.ts')) {
-//       // Handle TS file addition
-//       await uploadToBunnyCDN(filePath, identifier, path.basename(filePath));
-//     }
-//   })
-//   .on('change', async (filePath) => {
-//     console.log(`File modified: ${filePath}`);
+let isUpdating = false;
 
-//     if (filePath.endsWith('.m3u8') || filePath.endsWith('.ts')) {
-//       // Upload the modified M3U8 or TS file
-//       await uploadToBunnyCDN(filePath, identifier, path.basename(filePath));
-//     }
-//   })
-//   .on('error', (error) => console.error(`Watcher error: ${error.message}`));
+watcher
+    .on('add', async (filePath) => {
+        if (filePath.endsWith('.m3u8') && isUpdating === false) {
+            console.log(`File added: ${filePath}`);
+            isUpdating = true;
+            const folderName = path.basename(path.dirname(filePath));
+            await replaceTsFileLocalPath(filePath, folderName);
+            debounceReset();
+        }
+    })
+    .on('change', async (filePath) => {
+        if (filePath.endsWith('.m3u8') && isUpdating === false) {
+            console.log(`File modified: ${filePath}`);
+            isUpdating = true;
+            const folderName = path.basename(path.dirname(filePath));
+            await replaceTsFileLocalPath(filePath, folderName);
+            debounceReset();
+        }
+    })
+    .on('error', (error) => console.error(`Watcher error: ${error.message}`));
 
-// function stopWatcher(watcher) {
-//     watcher.close().then(() => console.log('Watcher stopped.'));
-// }
+const debounceTimeout = 2000;
+const debounceReset = () => {
+    setTimeout(() => {
+        isUpdating = false;
+    }, debounceTimeout);
+};
+
+function stopWatcher(watcher) {
+    watcher.close().then(() => console.log('Watcher stopped.'));
+}
 
 const retrieveCloudFlareStreamLiveInput = async (uid) => {
     try {

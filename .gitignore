@@ -143,3 +143,6 @@ dist
 *.avi
 *.mov
 *.wmv
+
+# live streams
+live-stream/
