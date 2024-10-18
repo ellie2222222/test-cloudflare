@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { sendToQueue, getMessage, uploadToBunnyCDN } = require("./utils");
+const { sendToQueue, getMessage } = require("./utils");
 const app = express();
 
 // Middleware
