@@ -16,7 +16,7 @@ app.use(
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/live-stream', express.static(path.join(__dirname, 'live-stream')));
+
 // Log API requests
 app.use((req, res, next) => {
   console.log(req.method + " " + req.path);
