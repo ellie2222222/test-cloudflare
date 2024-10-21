@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { sendToQueue, getMessage } = require("./utils");
+const { sendToQueue } = require("./utils");
 const app = express();
 
 // Middleware
@@ -35,8 +35,6 @@ app.post("/api/webhooks/cloudflare", async (req, res) => {
     res.status(500).json({ error: "Failed to process webhook" });
   }
 })
-
-// getMessage(`cloudflare.livestream`);
 
 // Start server
 const port = process.env.DEVELOPMENT_PORT || 3101;
