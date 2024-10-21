@@ -1,11 +1,5 @@
 const amqp = require("amqplib");
-const fs = require('fs');
-const path = require('path');
-const https = require("https");
-const { spawn } = require('child_process');
-const moment = require("moment");
-const { default: axios } = require("axios");
-const chokidar = require("chokidar");
+require("dotenv").config();
 
 // RabbitMQ connection URL
 const rabbitMQUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASS}@${process.env.RABBITMQ_URL}` || `amqp://livestream_1:DMCF5qyDg6wx2g3m8n@62.77.156.171`;
