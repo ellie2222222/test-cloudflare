@@ -6,30 +6,39 @@ const { spawn } = require('child_process');
 const moment = require("moment");
 const { default: axios } = require("axios");
 const chokidar = require("chokidar");
+require("dotenv").config();
 
 // RabbitMQ connection URL
 const rabbitMQUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASS}@${process.env.RABBITMQ_URL}` || `amqp://livestream_1:DMCF5qyDg6wx2g3m8n@62.77.156.171`;
+const developmentPort = process.env.DEVELOPMENT_PORT || "3101";
+
+const liveStreamDir = path.resolve('./live-stream');
+if (!fs.existsSync(liveStreamDir)) {
+    fs.mkdirSync(liveStreamDir, { recursive: true });
+}
+const pidDir = path.resolve(path.join(liveStreamDir, 'pid'));
+if (!fs.existsSync(pidDir)) {
+    fs.mkdirSync(pidDir, { recursive: true });
+}
 
 // Function to send message to RabbitMQ queue
 const sendToQueue = async (queueName, message) => {
+    console.log("Sending queue: ", queueName);
     try {
         const connection = await amqp.connect(rabbitMQUrl);
         const channel = await connection.createChannel();
 
         await channel.assertQueue(queueName, { durable: true });
-        const concurrentTasks = 10;
-        channel.prefetch(concurrentTasks);
 
         channel.sendToQueue(queueName, Buffer.from(JSON.stringify(message)), {
             persistent: true,
         });
 
-        setTimeout(() => {
-            channel.close();
-            connection.close();
-        }, 500);
+        await channel.close();
+        await connection.close();
     } catch (error) {
         console.error("Error sending to RabbitMQ:", error);
+        throw error;
     }
 };
 
@@ -43,38 +52,65 @@ const getMessage = async (queueName) => {
 
         channel.consume(queueName, async (msg) => {
             if (msg !== null) {
-                const messageContent = msg.content.toString();
-                const parsedMessage = JSON.parse(messageContent);
-                console.log(`Parsed Message: `, parsedMessage);
+                try {
+                    const messageContent = msg.content.toString();
+                    const parsedMessage = JSON.parse(messageContent);
 
-                // Extract event type and input id
-                const id = parsedMessage.data?.input_id;
-                const event = parsedMessage.data?.event_type;
+                    console.log(`Cloudflare Event: `, parsedMessage.data?.event_type);
 
-                // Retrieve stream key using input id
-                const stream = await retrieveCloudFlareStreamLiveInput(id);
-                const streamId = stream?.srtPlayback?.streamId;
-                const passphrase = stream?.srtPlayback?.passphrase;
+                    const id = parsedMessage.data?.input_id;
+                    switch (queueName) {
+                        case "cloudflare.livestream":
+                            // Extract event type
+                            const event = parsedMessage.data?.event_type;
 
-                const streamServer = `srt://live.cloudflare.com:778?passphrase=${passphrase}&streamid=${streamId}`
-                switch (event) {
-                    case "live_input.connected":
-                        console.log("Connected");
-                        startFFmpeg(streamServer, id);
-                        break;
-                    case "live_input.disconnected":
-                        console.log("Disconnected");
-                        stopFFmpeg(id, false);
-                        break;
-                    case "live_input.errored":
-                        console.log("Cloudflare Error")
-                        console.log("Error");
-                        break;
-                    default:
-                        console.log("Default: ", event)
+                            // Retrieve stream key using input id
+                            const stream = await retrieveCloudFlareStreamLiveInput(id);
+                            const streamId = stream?.srtPlayback?.streamId;
+                            const passphrase = stream?.srtPlayback?.passphrase;
+
+                            const streamServer = `srt://live.cloudflare.com:778?passphrase=${passphrase}&streamid=${streamId}`
+                            switch (event) {
+                                case "live_input.connected":
+                                    console.log("Connected");
+                                    startFFmpeg(streamServer, id);
+                                    break;
+                                case "live_input.disconnected":
+                                    console.log("Disconnected");
+                                    stopFFmpeg(id, false);
+                                    break;
+                                case "live_input.errored":
+                                    console.log("Cloudflare Error");
+                                    console.log("Error");
+                                    break;
+                                default:
+                                    console.log("Default: ", event);
+                            }
+                            break;
+                        case `${process.env.RABBITMQ_PREFIX_BUNNYUPLOAD}`:
+                            console.log("Uploading to Bunny...")
+                            const identifier = id;
+                            const outputDir = path.join(liveStreamDir, identifier);
+
+                            // Define m3u8 file name
+                            const m3u8FileName = `${identifier}.m3u8`;
+
+                            const filePath = path.join(outputDir, m3u8FileName);
+                            await replaceTsFilePath(filePath, identifier);
+                            await uploadToBunnyCDN(filePath, identifier, path.basename(filePath));
+                            await uploadTsFiles(identifier);
+
+                            await sendToQueue("live_stream.disconnected", { live_input_id: identifier });
+                            break;
+                        default:
+                            console.log("Default event");
+                    }
+
+                    channel.ack(msg);
+                } catch (error) {
+                    console.error(`Error while processing message: ${error}`);
+                    channel.nack(msg);
                 }
-
-                channel.ack(msg);
             }
         });
     } catch (error) {
@@ -82,17 +118,8 @@ const getMessage = async (queueName) => {
     }
 };
 
-const liveStreamDir = path.resolve('./live-stream');
-if (!fs.existsSync(liveStreamDir)) {
-    fs.mkdirSync(liveStreamDir, { recursive: true });
-}
-const pidDir = path.resolve(path.join(liveStreamDir, 'pid'));
-if (!fs.existsSync(pidDir)) {
-    fs.mkdirSync(pidDir, { recursive: true });
-}
-
 // Start FFmpeg process
-const startFFmpeg = (streamUrl, output) => {
+const startFFmpeg = async (streamUrl, output) => {
     try {
         const outputDir = path.join(liveStreamDir, output);
         if (!fs.existsSync(outputDir)) {
@@ -106,12 +133,15 @@ const startFFmpeg = (streamUrl, output) => {
         // Define ts file name
         const segmentPath = path.join(outputDir, `${output}-segment-%03d.ts`);
 
+        // Send to queue live event
+        await sendToQueue("live_stream.connected", { live_input_id: output });
+
         const ffmpeg = spawn('ffmpeg', [
             '-i', streamUrl,
             '-c:v', 'copy',
             '-c:a', 'copy',
             '-f', 'hls',
-            '-hls_time', '3',
+            '-hls_time', '1',
             '-hls_list_size', '3',
             '-hls_flags', 'split_by_time',
             '-hls_segment_filename', segmentPath,
@@ -170,16 +200,6 @@ const stopFFmpeg = async (identifier, hasEndTag) => {
             const m3u8FilePath = path.join(outputDir, m3u8FileName);
             fs.appendFileSync(m3u8FilePath, '#EXT-X-ENDLIST', 'utf8');
         }
-
-        // Replace ts file with local url
-        const filePath = path.join(outputDir, m3u8FileName);
-        replaceTsFileLocalPath(filePath, identifier);
-
-        // Upload to Bunny
-        // await replaceTsFilePath(filePath, identifier);
-        // await uploadToBunnyCDN(filePath, identifier, path.basename(filePath));
-        // await uploadTsFiles(identifier);
-        // await purgeBunnyCDNCache();
     } catch (err) {
         console.error(`Failed to stop FFmpeg for ${identifier}:`, err.message);
     }
@@ -235,7 +255,6 @@ const deleteFromBunnyCDN = async (folder, fileName) => {
             AccessKey: process.env.BUNNY_STORAGE_PASSWORD,
         },
     };
-    console.log(options.path);
 
     return new Promise((resolve, reject) => {
         const req = https.request(options, (res) => {
@@ -307,35 +326,6 @@ const replaceTsFilePath = async (m3u8FilePath, identifier) => {
     fs.writeFileSync(m3u8FilePath, m3u8Content);
 };
 
-const replaceTsFileLocalPath = async (m3u8FilePath, identifier) => {
-    try {
-        const url = `http://localhost:3000/live-stream/${identifier}`;
-        let m3u8Content;
-
-        m3u8Content = fs.readFileSync(m3u8FilePath, "utf8");
-
-        const regex = new RegExp(`${identifier}-segment-\\d+\\.ts`, "g");
-
-
-        m3u8Content = m3u8Content.replace(regex, (match) => {
-            const segmentFileName = match; // This is just the segment name (e.g., '582792b37303881f6c2ddc25359538d9-segment-006.ts')
-            const newUrl = `${url}/${segmentFileName}`;
-
-            // Check if the new URL already contains the full prefix
-            if (match.startsWith(`http://localhost:3000/live-stream/`)) {
-                return segmentFileName;
-            }
-
-            console.log(`Replacing ${segmentFileName} with ${newUrl}`);
-            return newUrl;
-        });
-
-        fs.writeFileSync(m3u8FilePath, m3u8Content);
-    } catch (error) {
-        console.error(`Error writing m3u8 file: ${error.message}`);
-    }
-};
-
 // Function to upload .ts segment files
 const uploadTsFiles = async (identifier) => {
     const outputDir = path.join(liveStreamDir, identifier);
@@ -366,16 +356,14 @@ watcher
             console.log(`File added: ${filePath}`);
             isUpdating = true;
             const folderName = path.basename(path.dirname(filePath));
-            await replaceTsFileLocalPath(filePath, folderName);
             debounceReset();
         }
     })
     .on('change', async (filePath) => {
         if (filePath.endsWith('.m3u8') && isUpdating === false) {
-            console.log(`File modified: ${filePath}`);
+            // console.log(`File modified: ${filePath}`);
             isUpdating = true;
             const folderName = path.basename(path.dirname(filePath));
-            await replaceTsFileLocalPath(filePath, folderName);
             debounceReset();
         }
     })

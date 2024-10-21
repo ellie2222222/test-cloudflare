@@ -36,7 +36,8 @@ app.post("/api/webhooks/cloudflare", async (req, res) => {
   }
 })
 
-// getMessage(`cloudflare.livestream`);
+getMessage(`cloudflare.livestream`);
+getMessage(`bunny_livestream`);
 
 // Start server
 const port = process.env.DEVELOPMENT_PORT || 3101;
