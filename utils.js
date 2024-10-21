@@ -10,57 +10,6 @@ const chokidar = require("chokidar");
 // RabbitMQ connection URL
 const rabbitMQUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_PASS}@${process.env.RABBITMQ_URL}` || `amqp://livestream_1:DMCF5qyDg6wx2g3m8n@62.77.156.171`;
 
-// Function to start processing videos from RabbitMQ queue
-const startProcessingQueueBunny = async (socketNamespace, userSocketMap) => {
-    try {
-        const connection = await amqp.connect(rabbitMQUrl);
-        const channel = await connection.createChannel();
-        const queue = `video_processing_bunny${process.env.RABBITMQ_PREFIX}`;
-
-        await channel.assertQueue(queue, { durable: true });
-        const concurrentTasks = 10;
-        channel.prefetch(concurrentTasks);
-
-        channel.consume(queue, async (msg) => {
-            if (msg !== null) {
-                try {
-                    const message = JSON.parse(msg.content.toString());
-                    const { videoUrl, m3u8Path, userId } = message;
-                    const fileNameWithExtension = path.basename(videoUrl);
-                    const videoId = path.parse(fileNameWithExtension).name;
-
-                    console.log('Processing video for userId:', userId);
-
-                    const socketId = userSocketMap.get(userId);
-                    const videoFilePath = path.resolve(`./uploads/${userId}/raw/`, path.basename(videoId));
-                    const outputDir = path.resolve(`./uploads/${m3u8Path}`);
-                    const outputFileName = `${path.basename(videoFilePath, path.extname(videoFilePath))}.m3u8`;
-
-                    fs.mkdirSync(outputDir, { recursive: true });
-
-                    await convertVideoToM3U8(videoUrl, outputDir, outputFileName);
-                    await uploadDirectoryToBunnyCDN(outputDir, userId, videoId, socketNamespace, socketId, m3u8Path);
-
-                    // Clean up processed files
-                    fs.rmSync(outputDir, { recursive: true, force: true });
-                    deleteFolderContents(`./uploads/${userId}/raw/`);
-
-                    // Notify client
-                    // socketNamespace.to(socketId).emit('videoUploadComplete', { videoId: outputFileName, userId });
-
-                    // Acknowledge message from RabbitMQ
-                    channel.ack(msg);
-                } catch (err) {
-                    console.error('Failed to process video:', err);
-                    // Handle error
-                }
-            }
-        });
-    } catch (error) {
-        console.error('Failed to start processing queue:', error);
-    }
-};
-
 // Function to send message to RabbitMQ queue
 const sendToQueue = async (queueName, message) => {
     try {
