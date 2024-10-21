@@ -6,24 +6,22 @@ const rabbitMQUrl = `amqp://${process.env.RABBITMQ_USER}:${process.env.RABBITMQ_
 
 // Function to send message to RabbitMQ queue
 const sendToQueue = async (queueName, message) => {
+    console.log("Sending queue: ", queueName);
     try {
         const connection = await amqp.connect(rabbitMQUrl);
         const channel = await connection.createChannel();
 
         await channel.assertQueue(queueName, { durable: true });
-        const concurrentTasks = 10;
-        channel.prefetch(concurrentTasks);
 
         channel.sendToQueue(queueName, Buffer.from(JSON.stringify(message)), {
             persistent: true,
         });
 
-        setTimeout(() => {
-            channel.close();
-            connection.close();
-        }, 500);
+        await channel.close();
+        await connection.close();
     } catch (error) {
         console.error("Error sending to RabbitMQ:", error);
+        throw error;
     }
 };
 
