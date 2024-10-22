@@ -16,7 +16,7 @@ app.use(
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/live-stream', express.static(path.join(__dirname, 'live-stream')));
+
 // Log API requests
 app.use((req, res, next) => {
   console.log(req.method + " " + req.path);
@@ -35,9 +35,6 @@ app.post("/api/webhooks/cloudflare", async (req, res) => {
     res.status(500).json({ error: "Failed to process webhook" });
   }
 })
-
-getMessage(`cloudflare.livestream`);
-getMessage(`bunny_livestream`);
 
 // Start server
 const port = process.env.DEVELOPMENT_PORT || 3101;
