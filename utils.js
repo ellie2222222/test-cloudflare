@@ -146,7 +146,7 @@ const startFFmpeg = async (streamUrl, output) => {
             '-f', 'hls',
             '-hls_time', '1',
             '-hls_list_size', '3',
-            '-hls_flags', 'delete_segments',
+            '-hls_flags', 'split_by_time',
             '-hls_segment_filename', segmentPath,
             '-tune', 'zerolatency',
             outputPath
@@ -163,10 +163,10 @@ const startFFmpeg = async (streamUrl, output) => {
 
         console.log(`FFmpeg started with PID: ${ffmpeg.pid}`);
 
-         // Send to queue live event
-        await sendToQueue("live_stream.connected", { 
+        // Send to queue live event
+        await sendToQueue("live_stream.connected", {
             live_input_id: output,
-            streamServerUrl: outputPath,
+            streamServerUrl: `live-stream/${path.relative(liveStreamDir, outputPath)}`,
         });
 
         ffmpeg.on('exit', async (code) => {
@@ -228,6 +228,19 @@ const startFFmpegFull = async (streamUrl, output) => {
         ffmpegAll.on('error', (error) => {
             console.log(error);
         });
+
+        // Generate thumbnail for livestream
+        setTimeout(async () => {
+            const file = await findTsFileClosestToTenPercent(outputDir);
+            if (file) {
+                await createThumbnail(path.join(outputDir, file.file), outputDir);
+            }
+            const thumbnailFileName = await uploadThumbnail(outputDir, output);
+            await sendToQueue("bunny_livestream_thumbnail", {
+                live_input_id: output,
+                thumbnailUrl: `https://${process.env.BUNNY_DOMAIN}/video/${output}/${thumbnailFileName}`,
+            })
+        }, 30000);
 
     } catch (error) {
         console.log(error);
@@ -301,7 +314,7 @@ const handleStreamFinish = async (outputDir, m3u8FilePath, identifier) => {
             // Delete ts file references in m3u8 file
             await removeTsEntries(m3u8FilePath, selectedTSFiles);
         }
-        
+
         // Upload files
         await replaceTsFilePath(filePath, identifier);
         await uploadTsFiles(outputDir, identifier);
@@ -334,6 +347,131 @@ const stopFFmpeg = async (identifier, hasEndTag) => {
         }
     } catch (err) {
         console.error(`Failed to stop FFmpeg for ${identifier}:`, err.message);
+    }
+};
+
+const createThumbnail = async (tsFilePath, outputDir) => {
+    try {
+        console.log(`Creating thumbnail for: ${tsFilePath}`);
+
+        // Check if the ts file exists before generating the thumbnail
+        if (!fs.existsSync(tsFilePath)) {
+            throw new Error(`TS file not found: ${tsFilePath}`);
+        }
+
+        // Ensure output directory exists
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        const outputFileName = `${path.basename(tsFilePath, ".ts")}-thumbnail.png`;
+        const outputPath = path.join(outputDir, outputFileName);
+
+        // Generate a thumbnail using ffmpeg from 5 seconds
+        await new Promise((resolve, reject) => {
+            const ffmpeg = spawn("ffmpeg", [
+                "-i",
+                tsFilePath,
+                "-vf",
+                "thumbnail",
+                "-frames:v",
+                "1", // Get only one frame
+                outputPath,
+            ]);
+
+            ffmpeg.on("close", (code) => {
+                if (code === 0) {
+                    resolve();
+                } else {
+                    reject(
+                        new Error(
+                            `Failed to create thumbnail, ffmpeg exited with code ${code}`
+                        )
+                    );
+                }
+            });
+
+            ffmpeg.on("error", (error) => {
+                reject(
+                    new Error(
+                        `Failed to create thumbnail, ffmpeg error: ${error.message}`
+                    )
+                );
+            });
+        });
+
+        console.log(`Thumbnail created at: ${outputPath}`);
+        return outputPath;
+    } catch (error) {
+        console.error("Error creating thumbnail:", error);
+        throw error;
+    }
+};
+
+const getTsFileDuration = (tsFilePath) => {
+    return new Promise((resolve, reject) => {
+        const ffprobe = spawn("ffprobe", [
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            tsFilePath,
+        ]);
+
+        let output = "";
+        ffprobe.stdout.on("data", (data) => {
+            output += data;
+        });
+
+        ffprobe.on("close", (code) => {
+            if (code === 0) {
+                resolve(parseFloat(output));
+            } else {
+                reject(new Error(`Failed to get duration for file: ${tsFilePath}`));
+            }
+        });
+    });
+};
+
+const findTsFileClosestToTenPercent = async (directory) => {
+    try {
+        const files = fs.readdirSync(directory);
+        let totalDuration = 0;
+        const durations = [];
+
+        // Filter .ts files and get their durations
+        for (const file of files) {
+            if (path.extname(file) === ".ts") {
+                const filePath = path.join(directory, file);
+                const duration = await getTsFileDuration(filePath);
+                durations.push({ file, duration });
+                totalDuration += duration;
+            }
+        }
+
+        // Calculate 10% of the total duration
+        const tenPercentDuration = totalDuration * 0.1;
+
+        // Find the first file that causes the cumulative duration to exceed or get close to 10%
+        let cumulativeDuration = 0;
+        let selectedFile = null;
+
+        for (const { file, duration } of durations) {
+            cumulativeDuration += duration;
+
+            // If cumulative duration exceeds 10% or is closest to it, return that file
+            if (cumulativeDuration >= tenPercentDuration) {
+                selectedFile = { file, duration };
+                break;
+            }
+        }
+
+        return selectedFile;
+    } catch (error) {
+        console.error("Error finding file closest to 10%:", error);
+        throw error;
     }
 };
 
@@ -469,6 +607,23 @@ const uploadTsFiles = async (outputDir, identifier) => {
         }
     }
 }
+
+const uploadThumbnail = async (outputDir, identifier) => {
+    const files = fs.readdirSync(outputDir);
+    let fileName = null;
+
+    for (const file of files) {
+        if (file.endsWith(".png")) {
+            fileName = path.basename(file);
+            const filePath = path.join(outputDir, fileName);
+            await uploadToBunnyCDN(filePath, identifier, fileName);
+            break;
+        }
+    }
+
+    return fileName;
+}
+
 
 const retrieveCloudFlareStreamLiveInput = async (uid) => {
     try {
